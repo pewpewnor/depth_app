@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  flutter-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: depth_app_builder
+    volumes:
+      - ./build:/app/build
+      - ./assets/models:/app/assets/models
+      - apk_output:/output
+    environment:
+      - ANDROID_SDK_ROOT=/opt/android
+      - FLUTTER_HOME=/opt/flutter
+      - JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    working_dir: /app
+
+volumes:
+  apk_output:
+    driver: local
