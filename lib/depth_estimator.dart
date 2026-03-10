@@ -1,53 +1,30 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:http/http.dart' as http;
 
 class DepthEstimator {
   static const platform = MethodChannel('com.depth.app/depth');
-  static const String _serverUrl = 'http://127.0.0.1:5000';
   
   bool _isInitialized = false;
-  bool _platformSupported = false;
   bool _useNative = false;
 
   DepthEstimator();
 
   Future<void> initialize() async {
     try {
-      _platformSupported = Platform.isAndroid || Platform.isIOS;
+      final bool isNativePlatform = Platform.isAndroid || Platform.isIOS;
       
-      if (!_platformSupported) {
-        _isInitialized = await _checkServerAvailable();
-        if (_isInitialized) {
-          debugPrint('DepthEstimator: Using Python server');
-        } else {
-          debugPrint('DepthEstimator: Running in demo mode');
-          _isInitialized = true;
-        }
-        return;
+      if (isNativePlatform) {
+        final String modelPath = await _getModelPath();
+        await platform.invokeMethod('initializeModel', {'modelPath': modelPath});
+        _useNative = true;
       }
-
-      final String modelPath = await _getModelPath();
-      await platform.invokeMethod('initializeModel', {'modelPath': modelPath});
-      _useNative = true;
+      
       _isInitialized = true;
     } catch (e) {
       debugPrint('DepthEstimator: Failed to initialize: $e');
       _isInitialized = true;
-    }
-  }
-
-  Future<bool> _checkServerAvailable() async {
-    try {
-      final response = await http.get(
-        Uri.parse('$_serverUrl/health'),
-      ).timeout(const Duration(seconds: 2));
-      return response.statusCode == 200;
-    } catch (e) {
-      return false;
     }
   }
 
@@ -56,10 +33,10 @@ class DepthEstimator {
       return 1.0;
     }
 
-    if (_useNative || (Platform.isAndroid || Platform.isIOS)) {
+    if (_useNative) {
       return _estimateDepthNative(bboxBytes);
     } else {
-      return _estimateDepthServer(bboxBytes);
+      return _estimateDepthOffline(bboxBytes);
     }
   }
 
@@ -77,24 +54,18 @@ class DepthEstimator {
     }
   }
 
-  Future<double> _estimateDepthServer(Uint8List bboxBytes) async {
-    try {
-      final base64Image = base64Encode(bboxBytes);
-      final response = await http.post(
-        Uri.parse('$_serverUrl/estimate_depth'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'image': base64Image}),
-      ).timeout(const Duration(seconds: 10));
-      
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        return (json['depth'] as num).toDouble();
-      }
-      return 0.0;
-    } catch (e) {
-      debugPrint('DepthEstimator: Server depth estimation failed: $e');
-      return 1.0;
+  double _estimateDepthOffline(Uint8List bboxBytes) {
+    if (bboxBytes.isEmpty) return 0.0;
+    
+    int sum = 0;
+    for (int i = 0; i < bboxBytes.length; i++) {
+      sum += bboxBytes[i];
     }
+    
+    double mean = sum.toDouble() / bboxBytes.length;
+    double normalized = (mean / 255.0 * 255.0).clamp(0, 255);
+    
+    return _calibrateDepth(normalized);
   }
 
   double _calibrateDepth(double rawValue) {
@@ -122,7 +93,7 @@ class DepthEstimator {
   }
 
   void dispose() {
-    if (_isInitialized && _platformSupported) {
+    if (_isInitialized && _useNative) {
       platform.invokeMethod('cleanupModel').ignore();
     }
   }

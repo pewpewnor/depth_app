@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'dart:io';
 import 'package:flutter/services.dart';
 import 'depth_estimator.dart';
 
@@ -45,26 +44,19 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
   double _depthMeters = 0.0;
   bool _isProcessing = false;
   String _status = "Initializing...";
-  bool _cameraSupported = true;
+  bool _cameraInitialized = false;
   
   @override
   void initState() {
     super.initState();
-    _checkPlatformSupport();
     _initializeCamera();
     _initializeDepthEstimator();
   }
 
-  void _checkPlatformSupport() {
-    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-      _cameraSupported = false;
-      setState(() => _status = "Camera not supported on desktop. Use Android/iOS device.");
-    }
-  }
-
   Future<void> _initializeCamera() async {
     try {
-      if (!_cameraSupported || cameras.isEmpty) {
+      if (cameras.isEmpty) {
+        setState(() => _status = "No cameras available");
         return;
       }
       
@@ -76,6 +68,8 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       await _controller.initialize();
       
       if (!mounted) return;
+      
+      _cameraInitialized = true;
       
       await _controller.startImageStream((CameraImage image) {
         if (!_isProcessing) {
@@ -96,7 +90,6 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       await _depthEstimator.initialize();
       
       if (!mounted) return;
-      setState(() => _status = "Ready");
     } catch (e) {
       setState(() => _status = "Model error: $e");
     }
@@ -151,7 +144,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
 
   @override
   void dispose() {
-    if (_cameraSupported && cameras.isNotEmpty) {
+    if (_cameraInitialized) {
       _controller.dispose();
     }
     _depthEstimator.dispose();
@@ -164,7 +157,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       appBar: AppBar(
         title: const Text('Depth Estimator'),
       ),
-      body: _cameraSupported && _controller.value.isInitialized
+      body: _cameraInitialized && _controller.value.isInitialized
           ? Stack(
               children: [
                 CameraPreview(_controller),
@@ -218,17 +211,14 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  if (_cameraSupported)
-                    const CircularProgressIndicator()
-                  else
-                    const Icon(Icons.info, size: 48, color: Colors.blue),
-                  const SizedBox(height: 16),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 24),
                   Padding(
-                    padding: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.all(32.0),
                     child: Text(
                       _status,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 16),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
                     ),
                   ),
                 ],
