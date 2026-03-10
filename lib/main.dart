@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:image/image.dart' as img;
-import 'dart:typed_data';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'depth_estimator.dart';
@@ -10,7 +8,11 @@ late List<CameraDescription> cameras;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  cameras = await availableCameras();
+  try {
+    cameras = await availableCameras();
+  } catch (e) {
+    cameras = [];
+  }
   runApp(const MyApp());
 }
 
@@ -43,16 +45,29 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
   double _depthMeters = 0.0;
   bool _isProcessing = false;
   String _status = "Initializing...";
+  bool _cameraSupported = true;
   
   @override
   void initState() {
     super.initState();
+    _checkPlatformSupport();
     _initializeCamera();
     _initializeDepthEstimator();
   }
 
+  void _checkPlatformSupport() {
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      _cameraSupported = false;
+      setState(() => _status = "Camera not supported on desktop. Use Android/iOS device.");
+    }
+  }
+
   Future<void> _initializeCamera() async {
     try {
+      if (!_cameraSupported || cameras.isEmpty) {
+        return;
+      }
+      
       _controller = CameraController(
         cameras[0],
         ResolutionPreset.high,
@@ -79,6 +94,9 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
     try {
       _depthEstimator = DepthEstimator();
       await _depthEstimator.initialize();
+      
+      if (!mounted) return;
+      setState(() => _status = "Ready");
     } catch (e) {
       setState(() => _status = "Model error: $e");
     }
@@ -116,13 +134,13 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
         int uvIndex = uvPixelStride * (xi ~/ 2) + image.planes[1].bytesPerRow * (yi ~/ 2);
         
         int pixelIndex = yi * image.planes[0].bytesPerRow + xi;
-        int y_value = image.planes[0].bytes[pixelIndex];
-        int u_value = image.planes[1].bytes[uvIndex];
-        int v_value = image.planes[2].bytes[uvIndex];
+        int yValue = image.planes[0].bytes[pixelIndex];
+        int uValue = image.planes[1].bytes[uvIndex];
+        int vValue = image.planes[2].bytes[uvIndex];
         
-        int r = (y_value + 1.402 * (v_value - 128)).clamp(0, 255).toInt();
-        int g = (y_value - 0.344 * (u_value - 128) - 0.714 * (v_value - 128)).clamp(0, 255).toInt();
-        int b = (y_value + 1.772 * (u_value - 128)).clamp(0, 255).toInt();
+        int r = (yValue + 1.402 * (vValue - 128)).clamp(0, 255).toInt();
+        int g = (yValue - 0.344 * (uValue - 128) - 0.714 * (vValue - 128)).clamp(0, 255).toInt();
+        int b = (yValue + 1.772 * (uValue - 128)).clamp(0, 255).toInt();
         
         bytes.addAll([r, g, b]);
       }
@@ -133,7 +151,9 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (_cameraSupported && cameras.isNotEmpty) {
+      _controller.dispose();
+    }
     _depthEstimator.dispose();
     super.dispose();
   }
@@ -144,7 +164,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       appBar: AppBar(
         title: const Text('Depth Estimator'),
       ),
-      body: _controller.value.isInitialized
+      body: _cameraSupported && _controller.value.isInitialized
           ? Stack(
               children: [
                 CameraPreview(_controller),
@@ -198,84 +218,22 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const CircularProgressIndicator(),
+                  if (_cameraSupported)
+                    const CircularProgressIndicator()
+                  else
+                    const Icon(Icons.info, size: 48, color: Colors.blue),
                   const SizedBox(height: 16),
-                  Text(_status),
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Text(
+                      _status,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                  ),
                 ],
               ),
             ),
-    );
-  }
-}
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ),
     );
   }
 }

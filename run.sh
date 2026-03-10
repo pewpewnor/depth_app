@@ -21,20 +21,53 @@ case "$TARGET" in
         cd "$PROJECT_ROOT"
         flutter run --"$FLAVOR" -t lib/main.dart --verbose
         ;;
-    linux|l)
-        echo "Building and running on Linux..."
+    linux|l|desktop|d)
+        echo "Starting Python inference server..."
         cd "$PROJECT_ROOT"
-        flutter run --"$FLAVOR" -t lib/main.dart
+        if [ ! -d ".venv" ]; then
+            echo "Virtual environment not found. Running setup.sh first..."
+            bash setup.sh
+        fi
+        source .venv/bin/activate
+        python depth_server.py &
+        SERVER_PID=$!
+        sleep 2
+        echo "Server started (PID: $SERVER_PID)"
+        echo "Starting Flutter app..."
+        flutter run --"$FLAVOR" -t lib/main.dart -d linux
+        kill $SERVER_PID 2>/dev/null || true
         ;;
     macos|m)
-        echo "Building and running on macOS..."
+        echo "Starting Python inference server..."
         cd "$PROJECT_ROOT"
-        flutter run --"$FLAVOR" -t lib/main.dart
+        if [ ! -d ".venv" ]; then
+            echo "Virtual environment not found. Running setup.sh first..."
+            bash setup.sh
+        fi
+        source .venv/bin/activate
+        python depth_server.py &
+        SERVER_PID=$!
+        sleep 2
+        echo "Server started (PID: $SERVER_PID)"
+        echo "Starting Flutter app..."
+        flutter run --"$FLAVOR" -t lib/main.dart -d macos
+        kill $SERVER_PID 2>/dev/null || true
         ;;
     windows|w)
-        echo "Building and running on Windows..."
+        echo "Starting Python inference server..."
         cd "$PROJECT_ROOT"
-        flutter run --"$FLAVOR" -t lib/main.dart
+        if [ ! -d ".venv" ]; then
+            echo "Virtual environment not found. Running setup.sh first..."
+            bash setup.sh
+        fi
+        source .venv/bin/activate
+        python depth_server.py &
+        SERVER_PID=$!
+        sleep 2
+        echo "Server started (PID: $SERVER_PID)"
+        echo "Starting Flutter app..."
+        flutter run --"$FLAVOR" -t lib/main.dart -d windows
+        kill $SERVER_PID 2>/dev/null || true
         ;;
     *)
         echo "Usage: ./run.sh [target] [flavor]"
