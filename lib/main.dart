@@ -2,16 +2,30 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'depth_estimator.dart';
+import 'dart:developer' as developer;
 
-late List<CameraDescription> cameras;
+List<CameraDescription> cameras = [];
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   try {
     cameras = await availableCameras();
-  } catch (e) {
+    developer.log("Found ${cameras.length} cameras", name: 'camera.init');
+    
+    for (var camera in cameras) {
+      developer.log("Device: ${camera.name}", name: 'camera.init');
+    }
+  } catch (e, stackTrace) {
+    developer.log(
+      "Camera Error", 
+      name: 'camera.init', 
+      error: e, 
+      stackTrace: stackTrace
+    );
     cameras = [];
   }
+
   runApp(const MyApp());
 }
 
