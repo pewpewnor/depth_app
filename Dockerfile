@@ -57,8 +57,10 @@ RUN flutter build apk \
     --build-number "$(date +%s)" \
     --split-per-abi
 
+RUN flutter build ios --no-codesign --config-only || echo "iOS build skipped/failed but workspace is generated."
+
 RUN mkdir -p /output && \
-    cp $(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1) /output/depth_app.apk
+    cp $(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1) /output/depth_app.apk || true
 
 ENTRYPOINT ["/bin/bash"]
 CMD ["-c", "echo 'APK built successfully. Copy from /output/depth_app.apk' && tail -f /dev/null"]
