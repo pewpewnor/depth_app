@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'depth_estimator.dart';
 import 'dart:developer' as developer;
+import 'logger.dart';
 
 List<CameraDescription> cameras = [];
 
@@ -10,8 +11,9 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
+    logAndToast("Searching for cameras...", name: 'camera.init');
     cameras = await availableCameras();
-    developer.log("Found ${cameras.length} cameras", name: 'camera.init');
+    logAndToast("Found ${cameras.length} cameras", name: 'camera.init');
     
     for (var camera in cameras) {
       developer.log("Device: ${camera.name}", name: 'camera.init');
@@ -70,10 +72,12 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
   Future<void> _initializeCamera() async {
     try {
       if (cameras.isEmpty) {
+        logAndToast("No cameras available", name: 'camera.init');
         setState(() => _status = "No cameras available");
         return;
       }
       
+      logAndToast("Connecting to camera: ${cameras[0].name}", name: 'camera.init');
       _controller = CameraController(
         cameras[0],
         ResolutionPreset.high,
@@ -84,6 +88,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       if (!mounted) return;
       
       _cameraInitialized = true;
+      logAndToast("Camera ready", name: 'camera.init');
       
       await _controller.startImageStream((CameraImage image) {
         if (!_isProcessing) {
