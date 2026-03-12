@@ -80,7 +80,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       logAndToast("Connecting to camera: ${cameras[0].name}", name: 'camera.init');
       _controller = CameraController(
         cameras[0],
-        ResolutionPreset.high,
+        ResolutionPreset.medium,
         enableAudio: false,
       );
       await _controller.initialize();
