@@ -37,6 +37,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        pickFirst("lib/arm64-v8a/libonnxruntime.so")
+        pickFirst("lib/x86_64/libonnxruntime.so")
+        pickFirst("lib/armeabi-v7a/libonnxruntime.so")
+        pickFirst("lib/x86/libonnxruntime.so")
+    }
 }
 
 dependencies {

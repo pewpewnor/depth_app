@@ -7,7 +7,6 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import ai.onnxruntime.TensorInfo
 import ai.onnxruntime.OnnxTensor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -55,50 +54,58 @@ class MainActivity : FlutterActivity() {
             throw Exception("Model file not found: $modelPath")
         }
 
-        ortEnvironment = OrtEnvironment.getEnvironment()
-        val options = OrtSession.SessionOptions()
-        options.setGraphOptimizationLevel(OrtSession.GraphOptimizationLevel.ORT_ENABLE_ALL)
-        ortSession = ortEnvironment!!.createSession(modelPath, options)
+        try {
+            ortEnvironment = OrtEnvironment.getEnvironment()
+            ortSession = ortEnvironment!!.createSession(modelPath)
+        } catch (e: Exception) {
+            throw Exception("Failed to initialize model: ${e.message}")
+        }
     }
 
     private fun estimateDepthFromBytes(imageBytes: ByteArray?): Double {
-        if (imageBytes == null || ortSession == null) {
+        if (imageBytes == null || ortSession == null || ortEnvironment == null) {
             return 0.0
         }
 
-        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-        val resized = Bitmap.createScaledBitmap(bitmap, 518, 518, true)
+        try {
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+            val resized = Bitmap.createScaledBitmap(bitmap, 518, 518, true)
 
-        val floatArray = FloatArray(3 * 518 * 518)
-        val pixelData = IntArray(518 * 518)
-        resized.getPixels(pixelData, 0, 518, 0, 0, 518, 518)
+            val floatArray = FloatArray(3 * 518 * 518)
+            val pixelData = IntArray(518 * 518)
+            resized.getPixels(pixelData, 0, 518, 0, 0, 518, 518)
 
-        var idx = 0
-        for (pixel in pixelData) {
-            val r = ((pixel shr 16) and 0xFF) / 255.0f
-            val g = ((pixel shr 8) and 0xFF) / 255.0f
-            val b = (pixel and 0xFF) / 255.0f
+            var idx = 0
+            for (pixel in pixelData) {
+                val r = ((pixel shr 16) and 0xFF) / 255.0f
+                val g = ((pixel shr 8) and 0xFF) / 255.0f
+                val b = (pixel and 0xFF) / 255.0f
 
-            floatArray[idx] = (r - 0.485f) / 0.229f
-            floatArray[idx + 518 * 518] = (g - 0.456f) / 0.224f
-            floatArray[idx + 2 * 518 * 518] = (b - 0.406f) / 0.225f
-            idx++
+                floatArray[idx] = (r - 0.485f) / 0.229f
+                floatArray[idx + 518 * 518] = (g - 0.456f) / 0.224f
+                floatArray[idx + 2 * 518 * 518] = (b - 0.406f) / 0.225f
+                idx++
+            }
+
+            // Create tensor
+            val allocator = ortEnvironment!!.createAllocator()
+            val shape = longArrayOf(1, 3, 518, 518)
+            val inputTensor = OnnxTensor.createTensor(allocator, floatArray, shape)
+
+            // Run inference - pass as generic Map
+            val results = ortSession!!.run(mapOf("input" to inputTensor))
+            
+            // Extract output
+            val output = results[0].value as FloatArray
+            val depthValue = output.maxOrNull() ?: 0.0f
+            
+            // Cleanup
+            inputTensor.close()
+
+            return depthValue.toDouble()
+        } catch (e: Exception) {
+            throw Exception("Depth estimation failed: ${e.message}")
         }
-
-        val inputName = ortSession!!.inputNames[0]
-        val inputTensor = OnnxTensor.createTensor(
-            ortEnvironment,
-            floatArray,
-            longArrayOf(1, 3, 518, 518)
-        )
-
-        val results = ortSession!!.run(mapOf(inputName to inputTensor))
-        val output = results[0].value as FloatArray
-
-        val depthValue = output.maxOrNull() ?: 0.0f
-        inputTensor.close()
-
-        return depthValue.toDouble()
     }
 
     private fun cleanupModel() {

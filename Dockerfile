@@ -14,15 +14,13 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     unzip \
-    python3.10 \
+    python3 \
     python3-pip \
+    python3-venv \
     libssl-dev \
     libffi-dev \
     openjdk-11-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --upgrade pip setuptools wheel && \
-    pip3 install uv
 
 WORKDIR /app
 
@@ -33,34 +31,39 @@ RUN flutter pub get
 
 RUN mkdir -p assets/models
 
-RUN python3.10 -m pip install --quiet --no-warn-script-location \
-    torch==2.2.0 \
-    torchvision==0.17.0 \
-    transformers==4.36.2 \
-    huggingface-hub==0.20.3 \
-    numpy==1.24.3 \
-    onnx==1.15.0 \
-    onnxruntime==1.17.1 \
-    Pillow==10.1.0 \
-    opencv-python==4.8.1.78
+RUN python3 -m pip install --quiet --no-warn-script-location --break-system-packages --ignore-installed -r requirements.txt
 
-RUN python3.10 export_model.py
+RUN python3 export_model.py
 
 COPY . .
 
 RUN flutter clean && \
-    flutter pub get
+    flutter pub get && \
+    cd android && ./gradlew clean && cd /app
 
-RUN flutter build apk \
+RUN echo "Building APK..." && \
+    flutter build apk \
     --release \
     --target-platform android-arm64 \
     --build-number "$(date +%s)" \
-    --split-per-abi
+    --split-per-abi \
+    --no-tree-shake-icons
 
-RUN flutter build ios --no-codesign --config-only || echo "iOS build skipped/failed but workspace is generated."
+RUN echo "Building iOS app..." && \
+    flutter build ios --release --no-codesign || echo "iOS build warning: codesigning skipped, app will need to be signed on a Mac."
 
 RUN mkdir -p /output && \
-    cp $(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1) /output/depth_app.apk || true
+    echo "Copying APK to /output/..." && \
+    cp $(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1) /output/depth_app.apk || echo "Warning: APK not found" && \
+    echo "Copying iOS build artifacts to /output/..." && \
+    if [ -d "build/ios/iphoneos/Runner.app" ]; then \
+        cd build/ios/iphoneos && tar -czf /output/depth_app.app.tar.gz Runner.app && cd /app && \
+        echo "iOS app bundle archived to /output/depth_app.app.tar.gz"; \
+    else \
+        echo "Warning: iOS app bundle not found at build/ios/iphoneos/Runner.app"; \
+    fi
+
+RUN echo "Build complete. Artifacts available in /output/:"; ls -lh /output/ 2>/dev/null || echo "No artifacts found"
 
 ENTRYPOINT ["/bin/bash"]
-CMD ["-c", "echo 'APK built successfully. Copy from /output/depth_app.apk' && tail -f /dev/null"]
+CMD ["-c", "echo 'Build complete. Available outputs:' && ls -lh /output/ && tail -f /dev/null"]
