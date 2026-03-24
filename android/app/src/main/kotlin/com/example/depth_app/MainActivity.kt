@@ -8,9 +8,9 @@ import io.flutter.plugin.common.MethodChannel
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OnnxTensor
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.depth.app/depth"
@@ -57,6 +57,7 @@ class MainActivity : FlutterActivity() {
         try {
             ortEnvironment = OrtEnvironment.getEnvironment()
             ortSession = ortEnvironment!!.createSession(modelPath)
+            println("ONNX Runtime model initialized successfully")
         } catch (e: Exception) {
             throw Exception("Failed to initialize model: ${e.message}")
         }
@@ -87,13 +88,12 @@ class MainActivity : FlutterActivity() {
                 idx++
             }
 
-            // Create tensor
-            val allocator = ortEnvironment!!.createAllocator()
+            // Create input tensor directly (no allocator needed for 1.17.1)
             val shape = longArrayOf(1, 3, 518, 518)
-            val inputTensor = OnnxTensor.createTensor(allocator, floatArray, shape)
+            val inputTensor = OnnxTensor.createTensor(ortEnvironment!!, floatArray, shape)
 
-            // Run inference - pass as generic Map
-            val results = ortSession!!.run(mapOf("input" to inputTensor))
+            // Run inference
+            val results = ortSession!!.run(mapOf("pixel_values" to inputTensor))
             
             // Extract output
             val output = results[0].value as FloatArray
@@ -113,4 +113,6 @@ class MainActivity : FlutterActivity() {
         ortEnvironment?.close()
     }
 }
+
+
 

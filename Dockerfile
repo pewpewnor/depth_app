@@ -25,15 +25,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY pubspec.yaml pubspec.lock* ./
-COPY requirements.txt export_model.py ./
+COPY assets/models ./assets/models/
 
 RUN flutter pub get
-
-RUN mkdir -p assets/models
-
-RUN python3 -m pip install --quiet --no-warn-script-location --break-system-packages --ignore-installed -r requirements.txt
-
-RUN python3 export_model.py
 
 COPY . .
 
