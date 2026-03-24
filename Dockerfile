@@ -1,12 +1,14 @@
-FROM ghcr.io/cirruslabs/flutter:latest
+FROM ghcr.io/cirruslabs/flutter:latest AS builder
 
 LABEL maintainer="Depth App Team"
 LABEL description="Flutter App for Real-time Depth Estimation"
 
 ENV FLUTTER_HOME=/opt/flutter
-ENV ANDROID_HOME=/opt/android
-ENV ANDROID_SDK_ROOT=${ANDROID_HOME}
-ENV PATH="${FLUTTER_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/emulator:${ANDROID_HOME}/platform-tools:${PATH}"
+ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux
+ENV ANDROID_HOME=${ANDROID_SDK_ROOT}
+ENV PATH="${FLUTTER_HOME}/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/build-tools/35.0.0:${PATH}"
+ENV FLUTTER_ROOT=${FLUTTER_HOME}
+ENV PUB_CACHE=/root/.pub-cache
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -22,18 +24,24 @@ RUN apt-get update && apt-get install -y \
     openjdk-11-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
 
+RUN flutter config --no-analytics && \
+    flutter precache --android
+
 WORKDIR /app
 
 COPY pubspec.yaml pubspec.lock* ./
-COPY assets/models ./assets/models/
+COPY assets/ ./assets/
 
 RUN flutter pub get
 
-COPY . .
+COPY android/ ./android/
+COPY lib/ ./lib/
+COPY ios/ ./ios/
+COPY pubspec.yaml pubspec.lock* ./
 
-RUN flutter clean && \
-    flutter pub get && \
-    cd android && ./gradlew clean && cd /app
+RUN flutter clean && flutter pub get
+
+RUN cd android && ./gradlew clean && cd /app
 
 RUN echo "Building APK..." && \
     flutter build apk \
@@ -43,21 +51,25 @@ RUN echo "Building APK..." && \
     --split-per-abi \
     --no-tree-shake-icons
 
-RUN echo "Building iOS app..." && \
-    flutter build ios --release --no-codesign || echo "iOS build warning: codesigning skipped, app will need to be signed on a Mac."
+RUN echo "Building iOS..." && \
+    flutter build ios \
+    --release \
+    --no-codesign || echo "iOS build warning: codesigning skipped"
 
-RUN mkdir -p /output && \
-    echo "Copying APK to /output/..." && \
-    cp $(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1) /output/depth_app.apk || echo "Warning: APK not found" && \
-    echo "Copying iOS build artifacts to /output/..." && \
+RUN mkdir -p /output/android /output/ios && \
+    find build/app/outputs/flutter-apk -name "*.apk" -type f \
+        -exec cp {} /output/android/ \; && \
+    echo "APKs copied:" && ls -lh /output/android/ && \
     if [ -d "build/ios/iphoneos/Runner.app" ]; then \
-        cd build/ios/iphoneos && tar -czf /output/depth_app.app.tar.gz Runner.app && cd /app && \
-        echo "iOS app bundle archived to /output/depth_app.app.tar.gz"; \
+        cd build/ios/iphoneos && \
+        tar -czf /output/ios/depth_app.app.tar.gz Runner.app && \
+        cd /app && \
+        echo "iOS bundle archived"; \
     else \
-        echo "Warning: iOS app bundle not found at build/ios/iphoneos/Runner.app"; \
+        echo "Warning: iOS app bundle not found"; \
     fi
 
-RUN echo "Build complete. Artifacts available in /output/:"; ls -lh /output/ 2>/dev/null || echo "No artifacts found"
+RUN echo "=== Build Artifacts ===" && ls -lhR /output/
 
-ENTRYPOINT ["/bin/bash"]
-CMD ["-c", "echo 'Build complete. Available outputs:' && ls -lh /output/ && tail -f /dev/null"]
+FROM scratch AS export
+COPY --from=builder /output /

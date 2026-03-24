@@ -11,6 +11,7 @@ import ai.onnxruntime.OnnxTensor
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.depth.app/depth"
@@ -88,18 +89,15 @@ class MainActivity : FlutterActivity() {
                 idx++
             }
 
-            // Create input tensor directly (no allocator needed for 1.17.1)
             val shape = longArrayOf(1, 3, 518, 518)
-            val inputTensor = OnnxTensor.createTensor(ortEnvironment!!, floatArray, shape)
+            val floatBuffer = FloatBuffer.wrap(floatArray)
+            val inputTensor = OnnxTensor.createTensor(ortEnvironment!!, floatBuffer, shape)
 
-            // Run inference
             val results = ortSession!!.run(mapOf("pixel_values" to inputTensor))
             
-            // Extract output
             val output = results[0].value as FloatArray
             val depthValue = output.maxOrNull() ?: 0.0f
             
-            // Cleanup
             inputTensor.close()
 
             return depthValue.toDouble()
@@ -113,6 +111,3 @@ class MainActivity : FlutterActivity() {
         ortEnvironment?.close()
     }
 }
-
-
-
