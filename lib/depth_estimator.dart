@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:onnxruntime/onnxruntime.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
 
 class DepthEstimator {
@@ -12,6 +13,8 @@ class DepthEstimator {
   bool _isInitialized = false;
   bool _useNative = false;
   OrtSession? _ortSession;
+  late double _calibrationValue;
+  late double _calibrationDistance;
 
   DepthEstimator();
 
@@ -38,6 +41,9 @@ class DepthEstimator {
   Future<void> initialize() async {
     try {
       logAndToast("Initializing DepthEstimator...", name: "depth_estimator");
+      
+      // Load calibration from SharedPreferences
+      await loadCalibration();
       
       // Try to get model path
       String? modelPath;
@@ -221,11 +227,41 @@ class DepthEstimator {
   }
 
   double _calibrateDepth(double rawValue) {
-    const double calibrationValue = 147.0;
-    const double calibrationDistance = 6.0;
-    
     if (rawValue == 0) return 0.0;
-    return (rawValue / calibrationValue) * calibrationDistance;
+    return (rawValue / _calibrationValue) * _calibrationDistance;
+  }
+
+  Future<void> loadCalibration() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _calibrationValue = prefs.getDouble('calibration_value') ?? 147.0;
+      _calibrationDistance = prefs.getDouble('calibration_distance') ?? 6.0;
+      logAndToast("Loaded calibration: value=$_calibrationValue, distance=$_calibrationDistance", name: "calibration");
+    } catch (e) {
+      // Set defaults if loading fails
+      _calibrationValue = 147.0;
+      _calibrationDistance = 6.0;
+      logAndToast("Failed to load calibration, using defaults: $e", name: "calibration");
+      debugPrint('DepthEstimator: Failed to load calibration: $e');
+    }
+  }
+
+  Future<void> saveCalibration(double modelOutput, double realDistance) async {
+    try {
+      _calibrationValue = modelOutput;
+      _calibrationDistance = realDistance;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('calibration_value', modelOutput);
+      await prefs.setDouble('calibration_distance', realDistance);
+      logAndToast("Saved calibration: value=$modelOutput, distance=$realDistance", name: "calibration");
+    } catch (e) {
+      logAndToast("Failed to save calibration: $e", name: "calibration");
+      debugPrint('DepthEstimator: Failed to save calibration: $e');
+    }
+  }
+
+  Future<String> getCalibrationInfo() async {
+    return "Calibration Value: ${_calibrationValue.toStringAsFixed(2)}\nCalibration Distance: ${_calibrationDistance.toStringAsFixed(2)}m";
   }
 
   Future<String> _getModelPath() async {

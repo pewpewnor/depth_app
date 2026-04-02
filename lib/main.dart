@@ -50,6 +50,8 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
   bool _permissionGranted = false;
   bool _modelInitializing = false;
   String? _modelError;
+  int _frameCounter = 0;
+  DateTime? _lastInferenceTime;
   
   @override
   void initState() {
@@ -364,9 +366,18 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
 
   void _processFrame(CameraImage image) async {
     try {
+      // Increment frame counter
+      _frameCounter++;
+      
+      // Only process every 10th frame for depth inference
+      if (_frameCounter % 10 != 0) {
+        _isProcessing = false;
+        return;
+      }
+
       int width = image.width;
       int height = image.height;
-      int bboxSize = 224;
+      int bboxSize = 150;  // Reduced from 224 to 150
       
       int x = (width - bboxSize) ~/ 2;
       int y = (height - bboxSize) ~/ 2;
@@ -377,6 +388,7 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
       
       setState(() {
         _depthMeters = depth;
+        _lastInferenceTime = DateTime.now();
       });
     } catch (e) {
       setState(() => _status = "Processing error: $e");
@@ -409,6 +421,24 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
     return Uint8List.fromList(bytes);
   }
 
+  void _showCalibrationDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return _CalibrationDialog(
+          depthEstimator: _depthEstimator,
+          controller: _controller,
+          currentDepthReading: _depthMeters,
+          onCalibrationSaved: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Calibration saved successfully!')),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     if (_cameraInitialized && _controller != null) {
@@ -427,17 +457,24 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Depth Estimator'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Calibrate',
+            onPressed: _showCalibrationDialog,
+          ),
+        ],
       ),
       body: _cameraInitialized && _controller != null && _controller!.value.isInitialized
           ? Stack(
               children: [
                 CameraPreview(_controller!),
                 Positioned(
-                  top: (MediaQuery.of(context).size.height - 224) / 2,
-                  left: (MediaQuery.of(context).size.width - 224) / 2,
+                  top: (MediaQuery.of(context).size.height - 150) / 2,
+                  left: (MediaQuery.of(context).size.width - 150) / 2,
                   child: Container(
-                    width: 224,
-                    height: 224,
+                    width: 150,
+                    height: 150,
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.red, width: 3),
                     ),
@@ -464,6 +501,15 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        const SizedBox(height: 8),
+                        if (_lastInferenceTime != null)
+                          Text(
+                            'Last Update: ${_lastInferenceTime!.hour.toString().padLeft(2, '0')}:${_lastInferenceTime!.minute.toString().padLeft(2, '0')}:${_lastInferenceTime!.second.toString().padLeft(2, '0')}',
+                            style: const TextStyle(
+                              color: Colors.yellow,
+                              fontSize: 12,
+                            ),
+                          ),
                         const SizedBox(height: 8),
                         Text(
                           _status,
@@ -592,6 +638,190 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
                 ),
               ),
             ),
+    );
+  }
+}
+
+class _CalibrationDialog extends StatefulWidget {
+  final DepthEstimator depthEstimator;
+  final CameraController? controller;
+  final double currentDepthReading;
+  final VoidCallback onCalibrationSaved;
+
+  const _CalibrationDialog({
+    required this.depthEstimator,
+    required this.controller,
+    required this.currentDepthReading,
+    required this.onCalibrationSaved,
+  });
+
+  @override
+  State<_CalibrationDialog> createState() => _CalibrationDialogState();
+}
+
+class _CalibrationDialogState extends State<_CalibrationDialog> {
+  final TextEditingController _distanceController = TextEditingController();
+  double? _capturedDepth;
+  bool _isCapturing = false;
+
+  @override
+  void dispose() {
+    _distanceController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _captureSnapshot() async {
+    try {
+      setState(() => _isCapturing = true);
+      
+      // Capture current depth reading at calibration time
+      _capturedDepth = widget.currentDepthReading;
+      
+      // Show confirmation dialog with image
+      if (widget.controller != null) {
+        try {
+          final XFile picture = await widget.controller!.takePicture();
+          final bytes = await picture.readAsBytes();
+          
+          if (!mounted) return;
+          
+          await showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Snapshot Captured'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Image.memory(bytes, height: 200),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Depth Reading: ${_capturedDepth?.toStringAsFixed(2)} m',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Now enter the actual distance to calibrate.')
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        } catch (e) {
+          debugPrint('Error taking picture: $e');
+        }
+      }
+      
+      setState(() => _isCapturing = false);
+    } catch (e) {
+      setState(() => _isCapturing = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error capturing snapshot: $e')),
+      );
+    }
+  }
+
+  Future<void> _saveCalibration() async {
+    if (_distanceController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter the real distance')),
+      );
+      return;
+    }
+
+    if (_capturedDepth == null || _capturedDepth == 0.0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please capture a snapshot first')),
+      );
+      return;
+    }
+
+    try {
+      final realDistance = double.parse(_distanceController.text);
+      
+      // Use the captured depth reading as the raw model output for calibration
+      await widget.depthEstimator.saveCalibration(_capturedDepth!, realDistance);
+      
+      if (!mounted) return;
+      
+      Navigator.pop(context);
+      widget.onCalibrationSaved();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Calibrate Depth'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'To calibrate the depth sensor, place a known-distance object in the center of the camera view (in the red box) and then:',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _isCapturing ? null : _captureSnapshot,
+              icon: const Icon(Icons.camera),
+              label: const Text('Capture Current View'),
+            ),
+            if (_capturedDepth != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Model Output: ${_capturedDepth?.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue,
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            TextField(
+              controller: _distanceController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Real Distance (meters)',
+                hintText: 'e.g., 2.5',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                prefixIcon: const Icon(Icons.straighten),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'The current depth reading will be calibrated to match the distance you enter.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _saveCalibration,
+          child: const Text('Save Calibration'),
+        ),
+      ],
     );
   }
 }
