@@ -375,33 +375,31 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
         return;
       }
 
-      int width = image.width;
-      int height = image.height;
-      int bboxSize = 150;  // Reduced from 224 to 150
+      // Extract full frame as RGB
+      Uint8List fullFrameRgb = _extractFullFrame(image);
       
-      int x = (width - bboxSize) ~/ 2;
-      int y = (height - bboxSize) ~/ 2;
-      
-      Uint8List bboxBytes = _extractBbox(image, x, y, bboxSize);
-      
-      double depth = await _depthEstimator.estimateDepth(bboxBytes);
+      double depth = await _depthEstimator.estimateDepth(fullFrameRgb, image.width, image.height);
       
       setState(() {
         _depthMeters = depth;
         _lastInferenceTime = DateTime.now();
       });
     } catch (e) {
-      setState(() => _status = "Processing error: $e");
+      // Display depth model error instead of falling back
+      setState(() {
+        _modelError = e.toString();
+        _status = "Depth model error: $e";
+      });
     } finally {
       _isProcessing = false;
     }
   }
 
-  Uint8List _extractBbox(CameraImage image, int x, int y, int size) {
+  Uint8List _extractFullFrame(CameraImage image) {
     List<int> bytes = [];
     
-    for (int yi = y; yi < y + size && yi < image.height; yi++) {
-      for (int xi = x; xi < x + size && xi < image.width; xi++) {
+    for (int yi = 0; yi < image.height; yi++) {
+      for (int xi = 0; xi < image.width; xi++) {
         int uvPixelStride = image.planes[1].bytesPerPixel ?? 1;
         int uvIndex = uvPixelStride * (xi ~/ 2) + image.planes[1].bytesPerRow * (yi ~/ 2);
         
@@ -469,12 +467,11 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
           ? Stack(
               children: [
                 CameraPreview(_controller!),
-                Positioned(
-                  top: (MediaQuery.of(context).size.height - 150) / 2,
-                  left: (MediaQuery.of(context).size.width - 150) / 2,
+                Align(
+                  alignment: Alignment.center,
                   child: Container(
-                    width: 150,
-                    height: 150,
+                    width: 120,
+                    height: 120,
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.red, width: 3),
                     ),
@@ -617,21 +614,6 @@ class _DepthEstimatorScreenState extends State<DepthEstimatorScreen> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange,
                           ),
-                        ),
-                      ),
-                    if (_modelError != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: TextButton(
-                          onPressed: () {
-                            if (mounted) {
-                              setState(() {
-                                _modelError = null;
-                                _status = "Continuing without model (using fallback)...";
-                              });
-                            }
-                          },
-                          child: const Text('Continue Without Model'),
                         ),
                       ),
                   ],

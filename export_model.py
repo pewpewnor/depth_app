@@ -2,10 +2,13 @@
 import torch
 from pathlib import Path
 import numpy as np
+import json
+from datetime import datetime
 
-MODEL_NAME = "LiheYoung/depth-anything-small-hf"
+MODEL_NAME = "depth-anything/Depth-Anything-V2-Small-hf"
 EXPORT_DIR = Path(".") / "assets" / "models"
 ONNX_PATH = EXPORT_DIR / "depth_model.onnx"
+CALIBRATION_PATH = EXPORT_DIR / "calibration.json"
 
 def check_cuda():
     if torch.cuda.is_available():
@@ -15,6 +18,31 @@ def check_cuda():
     else:
         print("ℹ Using CPU (CUDA not available)")
         return torch.device("cpu")
+
+def create_calibration_file():
+    """Create a calibration JSON file with default values and metadata."""
+    calibration_data = {
+        "version": "1.0",
+        "model_name": MODEL_NAME,
+        "export_date": datetime.now().isoformat(),
+        "model_input_size": 518,
+        "model_output_size": 518,
+        "calibration": {
+            "default_value": 147.0,
+            "default_distance_meters": 6.0,
+            "description": "Default calibration: raw model output 147.0 corresponds to 6.0 meters (0-255 range)"
+        },
+        "notes": "This calibration file provides default values for depth-to-meters conversion. Users can capture their own calibration by following the in-app calibration process."
+    }
+    
+    try:
+        with open(CALIBRATION_PATH, 'w') as f:
+            json.dump(calibration_data, f, indent=2)
+        print(f"✓ Calibration file created: {CALIBRATION_PATH}")
+        return True
+    except Exception as e:
+        print(f"✗ Failed to create calibration file: {e}")
+        return False
 
 def download_and_export_model():
     device = check_cuda()
@@ -74,14 +102,28 @@ def test_onnx_model():
         
         print(f"✓ Test inference successful!")
         print(f"✓ Output shape: {outputs[0].shape}")
-        print(f"✓ Output range: {outputs[0].min():.4f} to {outputs[0].max():.4f}")
+        min_val = outputs[0].min()
+        max_val = outputs[0].max()
+        mean_val = outputs[0].mean()
+        print(f"✓ Output min: {min_val:.4f}")
+        print(f"✓ Output max: {max_val:.4f}")
+        print(f"✓ Output mean: {mean_val:.4f}")
+        print(f"✓ Output range: {min_val:.4f} to {max_val:.4f}")
         
     except Exception as e:
         print(f"✗ ONNX test failed: {e}")
 
 if __name__ == "__main__":
     download_and_export_model()
-    print("\n✓ Model export complete! Ready for mobile deployment.")
+    print("\n📋 Creating calibration file...")
+    if create_calibration_file():
+        print("\n✓ Model export and calibration setup complete!")
+        print(f"✓ Files ready for mobile deployment:")
+        print(f"   - Model: {ONNX_PATH}")
+        print(f"   - Calibration: {CALIBRATION_PATH}")
+    else:
+        print("\n⚠ Model exported but calibration file creation failed")
+
 
 
 

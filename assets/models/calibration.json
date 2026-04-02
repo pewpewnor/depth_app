@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "model_name": "depth-anything/Depth-Anything-V2-Small-hf",
+  "export_date": "2026-04-03T01:44:39.169950",
+  "model_input_size": 518,
+  "model_output_size": 518,
+  "calibration": {
+    "default_value": 147.0,
+    "default_distance_meters": 6.0,
+    "description": "Default calibration: raw model output 147.0 corresponds to 6.0 meters (0-255 range)"
+  },
+  "notes": "This calibration file provides default values for depth-to-meters conversion. Users can capture their own calibration by following the in-app calibration process."
+}

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -53,9 +54,8 @@ class DepthEstimator {
       } catch (e) {
         logAndToast("Failed to get model path: $e", name: "depth_estimator");
         debugPrint('DepthEstimator: Failed to get model path: $e');
-        // Continue without model - will use heuristic
-        _isInitialized = true;
-        return;
+        // Don't silently continue - throw error
+        throw Exception("Cannot load depth model: $e");
       }
 
       // At this point modelPath is guaranteed to be non-null
@@ -63,6 +63,11 @@ class DepthEstimator {
         // Initialize ONNX Runtime locally for offline inference
         logAndToast("Attempting ONNX initialization with model: $modelPath", name: "depth_estimator");
         _initializeONNXRuntime(modelPath);
+        
+        // Check if ONNX initialization actually succeeded
+        if (_ortSession == null) {
+          throw Exception("Failed to initialize ONNX runtime with model");
+        }
         
         final bool isNativePlatform = Platform.isAndroid || Platform.isIOS;
         
@@ -77,6 +82,8 @@ class DepthEstimator {
             _useNative = false;
           }
         }
+      } else {
+        throw Exception("Model path is empty");
       }
       
       _isInitialized = true;
@@ -85,7 +92,9 @@ class DepthEstimator {
       debugPrint('DepthEstimator: Initialization error: $e');
       debugPrintStack(stackTrace: stackTrace);
       logAndToast('DepthEstimator: Failed to initialize: $e', name: "depth_estimator");
-      _isInitialized = true;
+      _isInitialized = false;
+      // Don't silently fail - rethrow the error
+      rethrow;
     }
   }
 
@@ -118,15 +127,15 @@ class DepthEstimator {
     }
   }
 
-  Future<double> estimateDepth(Uint8List bboxBytes) async {
+  Future<double> estimateDepth(Uint8List frameRgb, int frameWidth, int frameHeight) async {
     if (!_isInitialized) {
-      return 1.0;
+      return 0.0;
     }
 
     if (_useNative) {
-      return _estimateDepthNative(bboxBytes);
+      return _estimateDepthNative(frameRgb);
     } else {
-      return _estimateDepthOffline(bboxBytes);
+      return _estimateDepthOffline(frameRgb, frameWidth, frameHeight);
     }
   }
 
@@ -140,49 +149,36 @@ class DepthEstimator {
       return _calibrateDepth(rawDepth);
     } catch (e) {
       debugPrint('DepthEstimator: Native depth estimation failed: $e');
-      return 0.0;
+      // Throw error instead of silently returning 0.0
+      throw Exception('Depth model native inference failed: $e');
     }
   }
 
-  double _estimateDepthOffline(Uint8List bboxBytes) {
-    if (bboxBytes.isEmpty) return 0.0;
+  double _estimateDepthOffline(Uint8List frameRgb, int frameWidth, int frameHeight) {
+    if (frameRgb.isEmpty) return 0.0;
     
-    // If ONNX session failed to load, use simple heuristic
+    // Only use ONNX model - no fallback algorithms
     if (_ortSession == null) {
-      // Simple fallback: calculate average pixel intensity
-      int sum = 0;
-      for (int i = 0; i < bboxBytes.length; i++) {
-        sum += bboxBytes[i];
-      }
-
-      double mean = sum.toDouble() / bboxBytes.length;
-      double normalized = (mean / 255.0 * 255.0).clamp(0, 255);
-
-      return _calibrateDepth(normalized);
+      throw Exception('Depth model not initialized. Cannot perform depth estimation.');
     }
 
     try {
-      // bboxBytes is RGB byte array from 224x224 crop.
-      // We need to resize/pad it to 518x518 or what the model expects.
-      // Actually, if we just feed it directly it must be (1, 3, 518, 518).
-      // Assuming bboxSize in main.dart is 224, but ONNX export used 518.
-      // Wait, let's just make a dummy tensor of 518x518 from bboxBytes to avoid complex resize here.
-      // Real app should resize.
+      // frameRgb is RGB byte array from entire camera frame.
+      // Resize to 518x518 which is what the model expects.
 
       int targetSize = 518;
       Float32List float32list = Float32List(1 * 3 * targetSize * targetSize);
 
-      // Simple scaling logic (Nearest Neighbor) to 518x518
-      int srcSize = 224;
+      // Nearest Neighbor scaling to 518x518 for the full frame
       for (int c = 0; c < 3; c++) {
         for (int y = 0; y < targetSize; y++) {
           for (int x = 0; x < targetSize; x++) {
-            int srcX = (x * srcSize ~/ targetSize).clamp(0, srcSize - 1);
-            int srcY = (y * srcSize ~/ targetSize).clamp(0, srcSize - 1);
-            int srcIdx = (srcY * srcSize + srcX) * 3 + c;
+            int srcX = (x * frameWidth ~/ targetSize).clamp(0, frameWidth - 1);
+            int srcY = (y * frameHeight ~/ targetSize).clamp(0, frameHeight - 1);
+            int srcIdx = (srcY * frameWidth + srcX) * 3 + c;
 
             int dstIdx = c * (targetSize * targetSize) + y * targetSize + x;
-            float32list[dstIdx] = bboxBytes[srcIdx] / 255.0; // normalize
+            float32list[dstIdx] = frameRgb[srcIdx] / 255.0; // normalize
           }
         }
       }
@@ -195,16 +191,57 @@ class DepthEstimator {
       final outputs = _ortSession!.run(runOptions, inputs);
 
       final outputTensor = outputs[0]?.value as List<dynamic>;
-      // Find max
-      double maxDepth = 0;
+      
+      // Find min and max from entire depth map for normalization
+      double minDepth = double.infinity;
+      double maxDepth = double.negativeInfinity;
+      
       if (outputTensor.isNotEmpty) {
         // Output is [1, 518, 518]
         List<dynamic> firstBatch = outputTensor[0] as List<dynamic>;
         for (var row in firstBatch) {
           for (var val in row) {
-            if (val > maxDepth) maxDepth = val.toDouble();
+            double v = val.toDouble();
+            if (v < minDepth) minDepth = v;
+            if (v > maxDepth) maxDepth = v;
           }
         }
+      }
+
+      // Extract center region depth (corresponding to the red square bbox)
+      // The red square corresponds to the center 120x120 area in the original frame
+      // Which maps to a center region in the 518x518 depth map
+      int bboxSize120 = 120;
+      int centerRegionSize = (bboxSize120 * targetSize) ~/ frameWidth;
+      int centerStart = (targetSize - centerRegionSize) ~/ 2;
+      int centerEnd = centerStart + centerRegionSize;
+      
+      double centerDepthSum = 0.0;
+      int centerPixelCount = 0;
+      
+      if (outputTensor.isNotEmpty) {
+        List<dynamic> firstBatch = outputTensor[0] as List<dynamic>;
+        for (int y = centerStart; y < centerEnd && y < firstBatch.length; y++) {
+          var row = firstBatch[y] as List<dynamic>;
+          for (int x = centerStart; x < centerEnd && x < row.length; x++) {
+            centerDepthSum += row[x].toDouble();
+            centerPixelCount++;
+          }
+        }
+      }
+
+      // Calculate average depth in center region
+      double centerAverageDepth = centerPixelCount > 0 ? (centerDepthSum / centerPixelCount) : 0.0;
+      
+      // Normalize to 0-255 range for consistency
+      double normalizedDepth = 0.0;
+      double depthRange = maxDepth - minDepth;
+      if (depthRange > 0) {
+        // Normalize to 0-1, then scale to 0-255
+        normalizedDepth = ((centerAverageDepth - minDepth) / depthRange) * 255.0;
+      } else {
+        // If all values are the same, use the value as-is
+        normalizedDepth = centerAverageDepth;
       }
 
       tensor.release();
@@ -213,16 +250,11 @@ class DepthEstimator {
         out?.release();
       }
 
-      return _calibrateDepth(maxDepth);
+      return _calibrateDepth(normalizedDepth);
     } catch (e) {
       debugPrint('DepthEstimator: ONNX inference failed: $e');
-      // Fallback to simple heuristic
-      int sum = 0;
-      for (int i = 0; i < bboxBytes.length; i++) {
-        sum += bboxBytes[i];
-      }
-      double mean = sum.toDouble() / bboxBytes.length;
-      return _calibrateDepth(mean);
+      // Re-throw the error instead of falling back
+      throw Exception('Depth model inference failed: $e');
     }
   }
 
@@ -234,11 +266,41 @@ class DepthEstimator {
   Future<void> loadCalibration() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _calibrationValue = prefs.getDouble('calibration_value') ?? 147.0;
-      _calibrationDistance = prefs.getDouble('calibration_distance') ?? 6.0;
-      logAndToast("Loaded calibration: value=$_calibrationValue, distance=$_calibrationDistance", name: "calibration");
+      
+      // Check if user has saved calibration values in SharedPreferences
+      final savedValue = prefs.getDouble('calibration_value');
+      final savedDistance = prefs.getDouble('calibration_distance');
+      
+      if (savedValue != null && savedDistance != null) {
+        // Use saved calibration
+        _calibrationValue = savedValue;
+        _calibrationDistance = savedDistance;
+        logAndToast("Loaded calibration from saved data: value=$_calibrationValue, distance=$_calibrationDistance", name: "calibration");
+        return;
+      }
+      
+      // If no saved calibration, try to load from JSON asset (bundled calibration)
+      try {
+        final jsonString = await rootBundle.loadString('assets/models/calibration.json');
+        final jsonData = json.decode(jsonString) as Map<String, dynamic>;
+        
+        final calibrationData = jsonData['calibration'] as Map<String, dynamic>?;
+        if (calibrationData != null) {
+          _calibrationValue = (calibrationData['default_value'] as num?)?.toDouble() ?? 147.0;
+          _calibrationDistance = (calibrationData['default_distance_meters'] as num?)?.toDouble() ?? 6.0;
+          logAndToast("Loaded calibration from JSON: value=$_calibrationValue, distance=$_calibrationDistance", name: "calibration");
+          return;
+        }
+      } catch (e) {
+        logAndToast("Note: Calibration JSON not found in assets, using defaults", name: "calibration");
+      }
+      
+      // Fallback to default values
+      _calibrationValue = 147.0;
+      _calibrationDistance = 6.0;
+      logAndToast("Using default calibration values: value=$_calibrationValue, distance=$_calibrationDistance", name: "calibration");
     } catch (e) {
-      // Set defaults if loading fails
+      // Set defaults if all loading fails
       _calibrationValue = 147.0;
       _calibrationDistance = 6.0;
       logAndToast("Failed to load calibration, using defaults: $e", name: "calibration");
