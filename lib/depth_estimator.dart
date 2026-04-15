@@ -133,17 +133,21 @@ class DepthEstimator {
     }
 
     if (_useNative) {
-      return _estimateDepthNative(frameRgb);
+      return _estimateDepthNative(frameRgb, frameWidth, frameHeight);
     } else {
       return _estimateDepthOffline(frameRgb, frameWidth, frameHeight);
     }
   }
 
-  Future<double> _estimateDepthNative(Uint8List bboxBytes) async {
+  Future<double> _estimateDepthNative(Uint8List bboxBytes, int frameWidth, int frameHeight) async {
     try {
       final double rawDepth = await platform.invokeMethod<double>(
         'estimateDepth',
-        {'imageBytes': bboxBytes},
+        {
+          'imageBytes': bboxBytes,
+          'frameWidth': frameWidth,
+          'frameHeight': frameHeight,
+        },
       ) ?? 0.0;
       
       return _calibrateDepth(rawDepth);

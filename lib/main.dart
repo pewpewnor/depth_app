@@ -645,6 +645,18 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
   final TextEditingController _distanceController = TextEditingController();
   double? _capturedDepth;
   bool _isCapturing = false;
+  DateTime? _captureTime;
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-capture immediately when dialog opens
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) {
+        _captureSnapshot();
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -657,16 +669,25 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
       setState(() => _isCapturing = true);
       
       // Capture current depth reading at calibration time
-      _capturedDepth = widget.currentDepthReading;
+      double currentDepth = widget.currentDepthReading;
       
-      // Show confirmation dialog with image
-      if (widget.controller != null) {
+      // Set captured depth immediately (don't wait for picture)
+      setState(() {
+        _capturedDepth = currentDepth;
+        _captureTime = DateTime.now();
+      });
+      
+      logAndToast("Captured depth reading: $currentDepth", name: "calibration");
+      
+      // Try to take a picture if camera is available
+      if (widget.controller != null && widget.controller!.value.isInitialized) {
         try {
           final XFile picture = await widget.controller!.takePicture();
           final bytes = await picture.readAsBytes();
           
           if (!mounted) return;
           
+          // Show the snapshot preview
           await showDialog(
             context: context,
             builder: (context) => AlertDialog(
@@ -677,15 +698,18 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
                   Image.memory(bytes, height: 200),
                   const SizedBox(height: 16),
                   Text(
-                    'Depth Reading: ${_capturedDepth?.toStringAsFixed(2)} m',
+                    'Depth: ${_capturedDepth?.toStringAsFixed(2)} m',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: Colors.blue,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  const Text('Now enter the actual distance to calibrate.')
+                  if (_captureTime != null)
+                    Text(
+                      'Captured at ${_captureTime!.hour.toString().padLeft(2, '0')}:${_captureTime!.minute.toString().padLeft(2, '0')}:${_captureTime!.second.toString().padLeft(2, '0')}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
                 ],
               ),
               actions: [
@@ -697,16 +721,20 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
             ),
           );
         } catch (e) {
-          debugPrint('Error taking picture: $e');
+          logAndToast("Note: Could not take picture ($e), but depth reading was captured", name: "calibration");
+          debugPrint('Calibration: Error taking picture: $e');
+          // Don't fail - we still have the depth reading
         }
       }
       
       setState(() => _isCapturing = false);
     } catch (e) {
       setState(() => _isCapturing = false);
+      logAndToast("Error during capture: $e", name: "calibration");
+      debugPrint('Calibration: Capture error: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error capturing snapshot: $e')),
+        SnackBar(content: Text('Capture error: $e')),
       );
     }
   }
@@ -719,9 +747,12 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
       return;
     }
 
-    if (_capturedDepth == null || _capturedDepth == 0.0) {
+    // Use captured depth, or fall back to current reading if nothing was captured
+    double depthToCalibrate = _capturedDepth ?? widget.currentDepthReading;
+    
+    if (depthToCalibrate == 0.0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please capture a snapshot first')),
+        const SnackBar(content: Text('Cannot calibrate with zero depth reading. Please ensure model is running.')),
       );
       return;
     }
@@ -729,8 +760,10 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
     try {
       final realDistance = double.parse(_distanceController.text);
       
+      logAndToast("Saving calibration: depth=$depthToCalibrate, distance=$realDistance", name: "calibration");
+      
       // Use the captured depth reading as the raw model output for calibration
-      await widget.depthEstimator.saveCalibration(_capturedDepth!, realDistance);
+      await widget.depthEstimator.saveCalibration(depthToCalibrate, realDistance);
       
       if (!mounted) return;
       
@@ -753,30 +786,78 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'To calibrate the depth sensor, place a known-distance object in the center of the camera view (in the red box) and then:',
+              'Place a known-distance object in the center of the camera view (red box). A snapshot will be captured automatically.',
               style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            // Show current depth reading (updates in real-time)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                border: Border.all(color: Colors.grey),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    'Current Depth Reading',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${widget.currentDepthReading.toStringAsFixed(2)} m',
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: _isCapturing ? null : _captureSnapshot,
               icon: const Icon(Icons.camera),
-              label: const Text('Capture Current View'),
+              label: Text(_isCapturing ? 'Capturing...' : 'Capture Snapshot'),
             ),
             if (_capturedDepth != null) ...[
               const SizedBox(height: 16),
-              Text(
-                'Model Output: ${_capturedDepth?.toStringAsFixed(2)}',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue,
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  border: Border.all(color: Colors.green, width: 2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      '✓ Snapshot Captured',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${_capturedDepth?.toStringAsFixed(2)} m',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
             const SizedBox(height: 16),
             TextField(
               controller: _distanceController,
-              keyboardType: TextInputType.number,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
                 labelText: 'Real Distance (meters)',
                 hintText: 'e.g., 2.5',
@@ -788,7 +869,7 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
             ),
             const SizedBox(height: 16),
             const Text(
-              'The current depth reading will be calibrated to match the distance you enter.',
+              'Enter the actual distance to the object that was in the red box when you captured the snapshot.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],

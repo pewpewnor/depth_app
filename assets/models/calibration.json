@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "model_name": "depth-anything/Depth-Anything-V2-Small-hf",
-  "export_date": "2026-04-03T01:44:39.169950",
+  "export_date": "2026-04-05T18:00:58.506620",
   "model_input_size": 518,
   "model_output_size": 518,
   "calibration": {
