@@ -80,7 +80,11 @@ class MainActivity : FlutterActivity() {
             val targetSize = 518
             val floatArray = FloatArray(3 * targetSize * targetSize)
 
-            // Nearest neighbor scaling for each channel
+            // ImageNet normalization required by DA3METRIC-LARGE
+            val imgMean = floatArrayOf(0.485f, 0.456f, 0.406f)
+            val imgStd  = floatArrayOf(0.229f, 0.224f, 0.225f)
+
+            // Nearest neighbor scaling with ImageNet normalization
             for (c in 0 until 3) {
                 for (y in 0 until targetSize) {
                     for (x in 0 until targetSize) {
@@ -89,7 +93,8 @@ class MainActivity : FlutterActivity() {
                         val srcIdx = (srcY * frameWidth + srcX) * 3 + c
 
                         val dstIdx = c * (targetSize * targetSize) + y * targetSize + x
-                        floatArray[dstIdx] = (imageBytes[srcIdx].toInt() and 0xFF) / 255.0f
+                        val pixel = (imageBytes[srcIdx].toInt() and 0xFF) / 255.0f
+                        floatArray[dstIdx] = (pixel - imgMean[c]) / imgStd[c]
                     }
                 }
             }
@@ -99,9 +104,9 @@ class MainActivity : FlutterActivity() {
             val inputTensor = OnnxTensor.createTensor(ortEnvironment!!, floatBuffer, shape)
 
             println("ONNX: Running inference with input shape: ${shape.contentToString()}")
-            val results = ortSession!!.run(mapOf("pixel_values" to inputTensor))
+            val results = ortSession!!.run(mapOf("image" to inputTensor))
             
-            println("ONNX: Got ${results.size} output tensors")
+            println("ONNX: Got ${results.size()} output tensors")
             
             // Output tensor is [1, 518, 518]
             val outputValue = results[0]?.value
@@ -118,19 +123,18 @@ class MainActivity : FlutterActivity() {
                     outputValue
                 }
                 is Array<*> -> {
-                    println("ONNX: Output is Array")
-                    // Try to flatten it
+                    println("ONNX: Output is Array (4D for DA3METRIC-LARGE)")
+                    // Recursively flatten to handle [1, 1, H, W] 4D output
                     val flattened = mutableListOf<Float>()
-                    for (item in outputValue) {
-                        when (item) {
-                            is FloatArray -> flattened.addAll(item.toList())
-                            is Array<*> -> {
-                                for (subItem in item) {
-                                    if (subItem is FloatArray) flattened.addAll(subItem.toList())
-                                }
+                    fun flatten(arr: Array<*>) {
+                        for (item in arr) {
+                            when (item) {
+                                is FloatArray -> flattened.addAll(item.toList())
+                                is Array<*> -> flatten(item)
                             }
                         }
                     }
+                    flatten(outputValue)
                     flattened.toFloatArray()
                 }
                 else -> {
@@ -181,19 +185,12 @@ class MainActivity : FlutterActivity() {
             
             println("ONNX: Center depth sum=$centerDepthSum, count=$centerPixelCount, avg=$centerAverageDepth")
             
-            // Normalize to 0-255 range
-            var normalizedDepth = 0.0f
-            if (maxDepth > minDepth) {
-                normalizedDepth = ((centerAverageDepth - minDepth) / (maxDepth - minDepth)) * 255.0f
-            } else {
-                normalizedDepth = centerAverageDepth
-            }
-            
-            println("ONNX: Final normalized depth=$normalizedDepth")
-            
+            // DA3METRIC-LARGE outputs depth directly in meters — no normalization needed
+            println("ONNX: Center depth (meters)=$centerAverageDepth")
+
             inputTensor.close()
 
-            return normalizedDepth.toDouble()
+            return centerAverageDepth.toDouble()
         } catch (e: Exception) {
             println("ONNX: Exception during depth estimation: ${e.message}")
             e.printStackTrace()

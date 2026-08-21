@@ -173,7 +173,11 @@ class DepthEstimator {
       int targetSize = 518;
       Float32List float32list = Float32List(1 * 3 * targetSize * targetSize);
 
-      // Nearest Neighbor scaling to 518x518 for the full frame
+      // ImageNet normalization required by DA3METRIC-LARGE
+      const List<double> imgMean = [0.485, 0.456, 0.406];
+      const List<double> imgStd  = [0.229, 0.224, 0.225];
+
+      // Nearest Neighbor scaling to 518x518 with ImageNet normalization
       for (int c = 0; c < 3; c++) {
         for (int y = 0; y < targetSize; y++) {
           for (int x = 0; x < targetSize; x++) {
@@ -182,7 +186,7 @@ class DepthEstimator {
             int srcIdx = (srcY * frameWidth + srcX) * 3 + c;
 
             int dstIdx = c * (targetSize * targetSize) + y * targetSize + x;
-            float32list[dstIdx] = frameRgb[srcIdx] / 255.0; // normalize
+            float32list[dstIdx] = ((frameRgb[srcIdx] / 255.0) - imgMean[c]) / imgStd[c];
           }
         }
       }
@@ -191,62 +195,35 @@ class DepthEstimator {
       final tensor = OrtValueTensor.createTensorWithDataList(float32list, shape);
       final runOptions = OrtRunOptions();
 
-      final inputs = {'pixel_values': tensor};
+      final inputs = {'image': tensor};
       final outputs = _ortSession!.run(runOptions, inputs);
 
       final outputTensor = outputs[0]?.value as List<dynamic>;
-      
-      // Find min and max from entire depth map for normalization
-      double minDepth = double.infinity;
-      double maxDepth = double.negativeInfinity;
-      
-      if (outputTensor.isNotEmpty) {
-        // Output is [1, 518, 518]
-        List<dynamic> firstBatch = outputTensor[0] as List<dynamic>;
-        for (var row in firstBatch) {
-          for (var val in row) {
-            double v = val.toDouble();
-            if (v < minDepth) minDepth = v;
-            if (v > maxDepth) maxDepth = v;
-          }
-        }
-      }
 
-      // Extract center region depth (corresponding to the red square bbox)
-      // The red square corresponds to the center 120x120 area in the original frame
-      // Which maps to a center region in the 518x518 depth map
+      // DA3METRIC-LARGE output shape: [1, 1, 518, 518] (batch, channel, H, W)
+      // Extract batch=0, channel=0 to get the 518x518 depth map in meters
+      final List<dynamic> depthMap =
+          (outputTensor[0] as List<dynamic>)[0] as List<dynamic>;
+
+      // Extract center region (corresponds to the red 120x120 bbox in the camera frame)
       int bboxSize120 = 120;
       int centerRegionSize = (bboxSize120 * targetSize) ~/ frameWidth;
       int centerStart = (targetSize - centerRegionSize) ~/ 2;
       int centerEnd = centerStart + centerRegionSize;
-      
+
       double centerDepthSum = 0.0;
       int centerPixelCount = 0;
-      
-      if (outputTensor.isNotEmpty) {
-        List<dynamic> firstBatch = outputTensor[0] as List<dynamic>;
-        for (int y = centerStart; y < centerEnd && y < firstBatch.length; y++) {
-          var row = firstBatch[y] as List<dynamic>;
-          for (int x = centerStart; x < centerEnd && x < row.length; x++) {
-            centerDepthSum += row[x].toDouble();
-            centerPixelCount++;
-          }
+
+      for (int y = centerStart; y < centerEnd && y < depthMap.length; y++) {
+        var row = depthMap[y] as List<dynamic>;
+        for (int x = centerStart; x < centerEnd && x < row.length; x++) {
+          centerDepthSum += row[x].toDouble();
+          centerPixelCount++;
         }
       }
 
-      // Calculate average depth in center region
+      // Depth is directly in meters from DA3METRIC-LARGE
       double centerAverageDepth = centerPixelCount > 0 ? (centerDepthSum / centerPixelCount) : 0.0;
-      
-      // Normalize to 0-255 range for consistency
-      double normalizedDepth = 0.0;
-      double depthRange = maxDepth - minDepth;
-      if (depthRange > 0) {
-        // Normalize to 0-1, then scale to 0-255
-        normalizedDepth = ((centerAverageDepth - minDepth) / depthRange) * 255.0;
-      } else {
-        // If all values are the same, use the value as-is
-        normalizedDepth = centerAverageDepth;
-      }
 
       tensor.release();
       runOptions.release();
@@ -254,7 +231,7 @@ class DepthEstimator {
         out?.release();
       }
 
-      return _calibrateDepth(normalizedDepth);
+      return _calibrateDepth(centerAverageDepth);
     } catch (e) {
       debugPrint('DepthEstimator: ONNX inference failed: $e');
       // Re-throw the error instead of falling back
